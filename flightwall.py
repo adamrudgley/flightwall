@@ -70,7 +70,7 @@ FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 def load_font(size=8):
     paths = [
         os.path.join(FONT_DIR, "tom-thumb.bdf"),
-        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
         "/usr/share/fonts/truetype/freefont/FreeMono.ttf",
     ]
     for p in paths:
@@ -309,15 +309,46 @@ def render_page2(ac, route, frame=0):
 
 
 # ── IDLE SCREEN ────────────────────────────────────────────────────────────────
+def draw_plane_icon(draw, cx, cy, color, scale=1):
+    """Draw a small pixel-art plane silhouette centred at (cx, cy), nose pointing right (direction of travel)."""
+    pts = [
+        (6, 0),     # nose tip
+        (2, -1),
+        (0, -4),    # wingtip top
+        (-1, -4),
+        (1, -1),
+        (-4, -1),
+        (-6, -2),   # tail fin top
+        (-6, 0),
+        (-6, 2),    # tail fin bottom
+        (-4, 1),
+        (1, 1),
+        (-1, 4),
+        (0, 4),     # wingtip bottom
+        (2, 1),
+    ]
+    poly = [(cx + x * scale, cy + y * scale) for x, y in pts]
+    draw.polygon(poly, fill=color)
+
+
 def render_idle_frame(frame=0):
     img  = Image.new("RGB", (MATRIX_WIDTH, MATRIX_HEIGHT), BLACK)
     draw = ImageDraw.Draw(img)
 
-    brightness = int(40 + 30 * math.sin(frame * 0.15))
-    pulse_col  = (0, brightness, brightness + 20)
+    # ── Animated plane flying left -> right with a fading trail ──────────
+    cycle_len   = 90  # frames for one full crossing (~9s at 10fps)
+    t           = (frame % cycle_len) / cycle_len
+    plane_x     = int(-8 + t * (MATRIX_WIDTH + 16))
+    plane_y     = 7 + int(2 * math.sin(t * math.pi * 2))  # gentle bob
 
-    draw.ellipse([28, 6, 36, 14], outline=pulse_col)
-    draw.ellipse([30, 8, 34, 12], fill=pulse_col)
+    # Fading trail behind the plane
+    for i in range(1, 6):
+        trail_x = plane_x - i * 3
+        if -4 <= trail_x <= MATRIX_WIDTH:
+            fade = max(0, 60 - i * 12)
+            draw.point((trail_x, plane_y), fill=(0, fade, fade))
+
+    draw_plane_icon(draw, plane_x, plane_y, CYAN, scale=1)
 
     # Centre "NO AIRCRAFT" horizontally and make sure it actually fits
     label = "NO AIRCRAFT"
