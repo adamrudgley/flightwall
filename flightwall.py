@@ -313,7 +313,8 @@ def draw_plane_icon(draw, cx, cy, color, scale=1):
     """Draw a small pixel-art plane silhouette centred at (cx, cy), nose pointing right (direction of travel)."""
     pts = [
         (6, 0),     # nose tip
-        (1, -2),    # wider near nose
+        (3, -2),    # nose shoulder, wider for longer before narrowing
+        (1, -2),
         (0, -4),    # wingtip top
         (-1, -4),
         (0, -2),
@@ -326,6 +327,7 @@ def draw_plane_icon(draw, cx, cy, color, scale=1):
         (-1, 4),
         (0, 4),     # wingtip bottom
         (1, 2),
+        (3, 2),
     ]
     poly = [(cx + x * scale, cy + y * scale) for x, y in pts]
     draw.polygon(poly, fill=color)
