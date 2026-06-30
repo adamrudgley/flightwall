@@ -3,6 +3,10 @@
 flightwall.py
 Displays live overhead aircraft on a 64x32 HUB75 RGB LED matrix.
 
+Two pages per aircraft, cycling automatically:
+  Page 1 — Airline logo + callsign + aircraft type
+  Page 2 — Route + altitude + speed
+
 Hardware:
   - Raspberry Pi Zero 2W
   - Adafruit RGB Matrix Bonnet
@@ -10,8 +14,14 @@ Hardware:
   - 5V 4A power supply
 
 Dependencies:
-  pip3 install Pillow requests
+  pip3 install Pillow requests --break-system-packages
   (rpi-rgb-led-matrix installed separately — see setup guide)
+
+Airline logos:
+  Place small PNGs (ideally 16x16 or 18x18, transparent background) in
+  ./logos/ named by ICAO airline code, e.g. logos/QFA.png, logos/UAE.png,
+  logos/VOZ.png, logos/JST.png. If a logo isn't found, a coloured
+  monogram badge is generated automatically using the airline initials.
 """
 
 import time
@@ -19,20 +29,22 @@ import math
 import requests
 import logging
 import os
+import hashlib
 from datetime import datetime
 from PIL import Image, ImageDraw, ImageFont
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
-THINKCENTRE_API  = "http://192.168.68.53:5050"
-ADSBDB_API       = "https://api.adsbdb.com/v0/callsign"
+THINKCENTRE_API   = "http://192.168.68.53:5050"
+ADSBDB_API        = "https://api.adsbdb.com/v0/callsign"
 
-POLL_INTERVAL    = 30       # seconds between API polls
-DWELL_TIME       = 8        # seconds to show each aircraft
-IDLE_BRIGHTNESS  = 50       # 0-100
-ACTIVE_BRIGHTNESS= 80
+POLL_INTERVAL     = 30       # seconds between API polls
+PAGE_DWELL_TIME   = 4        # seconds to show each page
+ACTIVE_BRIGHTNESS = 80
 
-MATRIX_WIDTH     = 64
-MATRIX_HEIGHT    = 32
+MATRIX_WIDTH      = 64
+MATRIX_HEIGHT     = 32
+
+LOGO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logos")
 
 # ── COLOURS ───────────────────────────────────────────────────────────────────
 BLACK   = (0,   0,   0)
@@ -44,14 +56,18 @@ RED     = (220, 50,  50)
 GREY    = (60,  80,  100)
 DIM     = (20,  40,  60)
 
+MONOGRAM_PALETTE = [
+    (200, 30, 40), (30, 100, 200), (220, 140, 0), (0, 150, 110),
+    (160, 40, 180), (0, 130, 200), (200, 90, 20), (90, 150, 30),
+]
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
 # ── FONT LOADING ──────────────────────────────────────────────────────────────
-FONT_DIR = os.path.join(os.path.dirname(__file__), "fonts")
+FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 
 def load_font(size=8):
-    """Try to load a small bitmap font, fall back to PIL default."""
     paths = [
         os.path.join(FONT_DIR, "tom-thumb.bdf"),
         "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
@@ -61,7 +77,6 @@ def load_font(size=8):
         if os.path.exists(p):
             try:
                 if p.endswith(".bdf"):
-                    from PIL import BdfFontFile
                     return ImageFont.load(p)
                 return ImageFont.truetype(p, size)
             except Exception:
@@ -70,6 +85,7 @@ def load_font(size=8):
 
 FONT_SM  = load_font(7)
 FONT_MED = load_font(8)
+FONT_LG  = load_font(10)
 
 # ── ROUTE CACHE ───────────────────────────────────────────────────────────────
 _route_cache = {}
@@ -104,11 +120,59 @@ def fetch_aircraft():
         return []
 
 
-# ── DISPLAY RENDERING ─────────────────────────────────────────────────────────
+# ── AIRLINE LOGO HANDLING ─────────────────────────────────────────────────────
+_logo_cache = {}
+
+def airline_code_from_callsign(callsign):
+    """First 3 letters of the callsign are the ICAO airline code, e.g. QFA15 -> QFA."""
+    if not callsign:
+        return None
+    letters = "".join(c for c in callsign if c.isalpha())
+    return letters[:3].upper() if len(letters) >= 3 else None
+
+
+def monogram_colour(code):
+    h = int(hashlib.md5(code.encode()).hexdigest(), 16)
+    return MONOGRAM_PALETTE[h % len(MONOGRAM_PALETTE)]
+
+
+def get_logo(callsign, airline_name=None, size=20):
+    """
+    Returns a PIL Image (RGBA, size x size) for the airline logo.
+    Looks for logos/<ICAO_CODE>.png first; falls back to a generated
+    coloured monogram badge using the airline initials.
+    """
+    code = airline_code_from_callsign(callsign) or "???"
+    cache_key = f"{code}_{size}"
+    if cache_key in _logo_cache:
+        return _logo_cache[cache_key]
+
+    logo_path = os.path.join(LOGO_DIR, f"{code}.png")
+    if os.path.exists(logo_path):
+        try:
+            img = Image.open(logo_path).convert("RGBA")
+            img = img.resize((size, size), Image.LANCZOS)
+            _logo_cache[cache_key] = img
+            return img
+        except Exception as e:
+            log.warning(f"Failed to load logo {logo_path}: {e}")
+
+    initials = code[:2] if code != "???" else "??"
+    colour = monogram_colour(code)
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.ellipse([0, 0, size - 1, size - 1], fill=colour + (255,))
+    bbox = draw.textbbox((0, 0), initials, font=FONT_SM)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    draw.text(((size - tw) // 2, (size - th) // 2 - 1), initials, font=FONT_SM, fill=(255, 255, 255, 255))
+
+    _logo_cache[cache_key] = img
+    return img
+
+
+# ── DISPLAY HELPERS ───────────────────────────────────────────────────────────
 def draw_text(draw, x, y, text, font, color, max_width=None):
-    """Draw text, truncating to max_width pixels if set."""
     if max_width:
-        # Truncate text to fit
         while len(text) > 1:
             bbox = draw.textbbox((0, 0), text, font=font)
             w = bbox[2] - bbox[0]
@@ -138,7 +202,6 @@ def format_speed(spd):
 
 
 def short_aircraft_type(model):
-    """Convert full model name to a short display code e.g. A330, B787."""
     if not model or model == "Unknown":
         return None
     m = model.upper()
@@ -167,88 +230,89 @@ def short_aircraft_type(model):
     return None
 
 
-def render_aircraft_frame(ac, route, frame=0):
-    """Render a single 64x32 frame for one aircraft."""
+# ── PAGE 1: LOGO + CALLSIGN + TYPE ────────────────────────────────────────────
+def render_page1(ac, route, frame=0):
     img  = Image.new("RGB", (MATRIX_WIDTH, MATRIX_HEIGHT), BLACK)
     draw = ImageDraw.Draw(img)
 
-    # ── TOP ROW: callsign + aircraft type + time ────────────────────────
     callsign = ac.get("callsign", "?")
     ac_type  = short_aircraft_type(ac.get("model", ""))
+    airline_name = route.get("airline", {}).get("name") if route else None
 
-    draw_text(draw, 1, 1, callsign, FONT_MED, CYAN, max_width=36)
+    logo = get_logo(callsign, airline_name, size=20)
+    img.paste(logo, (2, 6), logo)
 
-    # Aircraft type next to callsign
+    draw_text(draw, 25, 3, callsign, FONT_LG, CYAN, max_width=37)
+
     if ac_type:
-        cs_bbox = draw.textbbox((0,0), callsign, font=FONT_MED)
-        cs_w = cs_bbox[2] - cs_bbox[0]
-        draw.text((cs_w + 4, 2), ac_type, font=FONT_SM, fill=AMBER)
+        draw.text((25, 14), ac_type, font=FONT_MED, fill=AMBER)
 
-    # Time top-right
-    now = datetime.now().strftime("%H:%M")
-    t_bbox = draw.textbbox((0,0), now, font=FONT_SM)
-    t_w = t_bbox[2] - t_bbox[0]
-    draw.text((MATRIX_WIDTH - t_w - 1, 2), now, font=FONT_SM, fill=GREY)
-
-    # Divider line
-    draw.line([(0, 10), (MATRIX_WIDTH, 10)], fill=DIM)
-
-    # ── MIDDLE: route ─────────────────────────────────────────────────────
-    if route and route.get("origin") and route.get("destination"):
-        origin = route["origin"].get("iata_code") or route["origin"].get("icao_code", "???")
-        dest   = route["destination"].get("iata_code") or route["destination"].get("icao_code", "???")
-        airline = route.get("airline", {}).get("name", "")
-
-        # Origin → Dest
-        route_str = f"{origin}  {dest}"
-        # Draw origin
-        draw.text((1, 12), origin, font=FONT_MED, fill=WHITE)
-        # Arrow
-        arrow_x = 1 + draw.textbbox((0,0), origin, font=FONT_MED)[2] + 2
-        draw.text((arrow_x, 12), "->", font=FONT_SM, fill=GREY)
-        # Dest
-        dest_x = arrow_x + draw.textbbox((0,0), "->", font=FONT_SM)[2] + 2
-        draw.text((dest_x, 12), dest, font=FONT_MED, fill=WHITE)
-
-        # Airline name (scrolling if long) on row below
-        if airline:
-            # Simple scroll based on frame number
-            full = airline[:24]
-            scroll_offset = (frame // 2) % max(1, len(full) - 10)
-            visible = full[scroll_offset:scroll_offset + 12]
-            draw.text((1, 21), visible, font=FONT_SM, fill=GREY)
+    name = airline_name or "Unknown airline"
+    full = name[:30]
+    if len(full) > 10:
+        scroll_offset = (frame // 3) % max(1, len(full) - 9)
+        visible = full[scroll_offset:scroll_offset + 10]
     else:
-        # No route data — show model
-        model = ac.get("model", "")
-        if model and model != "Unknown":
-            draw_text(draw, 1, 12, model[:14], FONT_SM, GREY)
-        else:
-            draw.text((1, 12), "Route unknown", font=FONT_SM, fill=GREY)
-
-    # Divider
-    draw.line([(0, 21), (MATRIX_WIDTH, 21)], fill=DIM)
-
-    # ── BOTTOM ROW: alt + speed ───────────────────────────────────────────
-    alt   = format_alt(ac.get("alt_baro"))
-    speed = format_speed(ac.get("ground_speed"))
-    arrow = vert_rate_arrow(ac.get("vert_rate"))
-
-    alt_str = f"{arrow}{alt}"
-    draw.text((1, 23), alt_str, font=FONT_SM, fill=AMBER)
-
-    spd_bbox = draw.textbbox((0,0), speed, font=FONT_SM)
-    spd_w = spd_bbox[2] - spd_bbox[0]
-    draw.text((MATRIX_WIDTH - spd_w - 1, 23), speed, font=FONT_SM, fill=GREEN)
+        visible = full
+    draw.line([(0, 24), (MATRIX_WIDTH, 24)], fill=DIM)
+    draw.text((2, 26), visible, font=FONT_SM, fill=GREY)
 
     return img
 
 
-def render_idle_frame(count, frame=0):
-    """Render the 'no aircraft' idle screen."""
+# ── PAGE 2: ROUTE + ALT + SPEED ───────────────────────────────────────────────
+def render_page2(ac, route, frame=0):
     img  = Image.new("RGB", (MATRIX_WIDTH, MATRIX_HEIGHT), BLACK)
     draw = ImageDraw.Draw(img)
 
-    # Pulsing dot
+    callsign = ac.get("callsign", "?")
+    draw_text(draw, 1, 1, callsign, FONT_SM, CYAN, max_width=36)
+
+    now = datetime.now().strftime("%H:%M")
+    t_bbox = draw.textbbox((0, 0), now, font=FONT_SM)
+    t_w = t_bbox[2] - t_bbox[0]
+    draw.text((MATRIX_WIDTH - t_w - 1, 2), now, font=FONT_SM, fill=GREY)
+
+    draw.line([(0, 9), (MATRIX_WIDTH, 9)], fill=DIM)
+
+    if route and route.get("origin") and route.get("destination"):
+        origin = route["origin"].get("iata_code") or route["origin"].get("icao_code", "???")
+        dest   = route["destination"].get("iata_code") or route["destination"].get("icao_code", "???")
+
+        draw.text((2, 12), origin, font=FONT_LG, fill=WHITE)
+        o_bbox = draw.textbbox((0, 0), origin, font=FONT_LG)
+        o_w = o_bbox[2] - o_bbox[0]
+
+        draw.text((2 + o_w + 3, 13), "->", font=FONT_SM, fill=GREY)
+        arrow_bbox = draw.textbbox((0, 0), "->", font=FONT_SM)
+        arrow_w = arrow_bbox[2] - arrow_bbox[0]
+
+        draw.text((2 + o_w + 3 + arrow_w + 3, 12), dest, font=FONT_LG, fill=WHITE)
+    else:
+        model = ac.get("model", "")
+        text = model[:16] if model and model != "Unknown" else "Route unknown"
+        draw.text((2, 14), text, font=FONT_SM, fill=GREY)
+
+    draw.line([(0, 22), (MATRIX_WIDTH, 22)], fill=DIM)
+
+    alt   = format_alt(ac.get("alt_baro"))
+    speed = format_speed(ac.get("ground_speed"))
+    arrow = vert_rate_arrow(ac.get("vert_rate"))
+
+    draw.text((2, 24), f"{arrow}{alt}", font=FONT_SM, fill=AMBER)
+
+    spd_bbox = draw.textbbox((0, 0), speed, font=FONT_SM)
+    spd_w = spd_bbox[2] - spd_bbox[0]
+    draw.text((MATRIX_WIDTH - spd_w - 2, 24), speed, font=FONT_SM, fill=GREEN)
+
+    return img
+
+
+# ── IDLE SCREEN ────────────────────────────────────────────────────────────────
+def render_idle_frame(frame=0):
+    img  = Image.new("RGB", (MATRIX_WIDTH, MATRIX_HEIGHT), BLACK)
+    draw = ImageDraw.Draw(img)
+
     brightness = int(40 + 30 * math.sin(frame * 0.15))
     pulse_col  = (0, brightness, brightness + 20)
 
@@ -258,34 +322,33 @@ def render_idle_frame(count, frame=0):
     draw.text((8, 18), "NO AIRCRAFT", font=FONT_SM, fill=DIM)
 
     now = datetime.now().strftime("%H:%M")
-    t_bbox = draw.textbbox((0,0), now, font=FONT_SM)
+    t_bbox = draw.textbbox((0, 0), now, font=FONT_SM)
     t_w = t_bbox[2] - t_bbox[0]
-    draw.text(((MATRIX_WIDTH - t_w)//2, 25), now, font=FONT_SM, fill=GREY)
+    draw.text(((MATRIX_WIDTH - t_w) // 2, 25), now, font=FONT_SM, fill=GREY)
 
     return img
 
 
 # ── MAIN LOOP ─────────────────────────────────────────────────────────────────
 def main():
-    # Import LED matrix — only available on Pi with rpi-rgb-led-matrix installed
     try:
         from rgbmatrix import RGBMatrix, RGBMatrixOptions
     except ImportError:
         log.error("rpi-rgb-led-matrix not installed. See setup guide.")
-        log.info("Running in PREVIEW mode — saving frames as preview.png")
+        log.info("Running in PREVIEW mode — saving frames as PNGs")
         run_preview_mode()
         return
 
     options = RGBMatrixOptions()
-    options.rows                 = 32
-    options.cols                 = 64
-    options.chain_length         = 1
-    options.parallel             = 1
-    options.hardware_mapping     = "adafruit-hat"   # Adafruit RGB Matrix Bonnet
-    options.gpio_slowdown        = 4                # increase if flickering (1-4)
-    options.brightness           = ACTIVE_BRIGHTNESS
-    options.disable_hardware_pulsing = True         # required for Pi Zero
-    options.drop_privileges      = False
+    options.rows                      = 32
+    options.cols                      = 64
+    options.chain_length              = 1
+    options.parallel                  = 1
+    options.hardware_mapping          = "adafruit-hat"
+    options.gpio_slowdown             = 4
+    options.brightness                = ACTIVE_BRIGHTNESS
+    options.disable_hardware_pulsing  = True
+    options.drop_privileges           = False
 
     matrix = RGBMatrix(options=options)
     canvas = matrix.CreateFrameCanvas()
@@ -296,71 +359,74 @@ def main():
     route_map     = {}
     last_poll     = 0
     ac_index      = 0
+    page          = 1            # 1 or 2
     frame         = 0
-    dwell_frames  = DWELL_TIME * 10  # at ~10fps
+    page_frames   = PAGE_DWELL_TIME * 10  # at ~10fps
 
     while True:
         now = time.time()
 
-        # Poll for new aircraft every POLL_INTERVAL seconds
         if now - last_poll > POLL_INTERVAL:
             log.info("Polling for aircraft…")
             aircraft_list = fetch_aircraft()
             log.info(f"Found {len(aircraft_list)} aircraft overhead")
             last_poll = now
             ac_index  = 0
+            page      = 1
 
-            # Kick off route lookups in background
             for ac in aircraft_list:
                 cs = ac.get("callsign")
                 if cs and cs not in route_map:
                     route = get_route(cs)
                     route_map[cs] = route
                     if route:
-                        log.info(f"  {cs}: {route.get('origin',{}).get('iata_code','?')} → {route.get('destination',{}).get('iata_code','?')}")
+                        o = route.get("origin", {}).get("iata_code", "?")
+                        d = route.get("destination", {}).get("iata_code", "?")
+                        log.info(f"  {cs}: {o} → {d}")
 
-        # Render frame
         if not aircraft_list:
-            img = render_idle_frame(0, frame)
+            img = render_idle_frame(frame)
         else:
-            # Advance to next aircraft every dwell_frames
-            if frame > 0 and frame % dwell_frames == 0:
-                ac_index = (ac_index + 1) % len(aircraft_list)
+            if frame > 0 and frame % page_frames == 0:
+                if page == 1:
+                    page = 2
+                else:
+                    page = 1
+                    ac_index = (ac_index + 1) % len(aircraft_list)
 
             ac    = aircraft_list[ac_index]
             route = route_map.get(ac.get("callsign"))
-            img   = render_aircraft_frame(ac, route, frame)
+            img   = render_page1(ac, route, frame) if page == 1 else render_page2(ac, route, frame)
 
-        # Push to matrix
         canvas.SetImage(img)
         canvas = matrix.SwapOnVSync(canvas)
 
         frame += 1
-        time.sleep(0.1)  # ~10fps
+        time.sleep(0.1)
 
 
 def run_preview_mode():
-    """Generate preview PNGs without the LED matrix hardware."""
     log.info("Fetching aircraft for preview…")
     aircraft_list = fetch_aircraft()
 
     if not aircraft_list:
         log.info("No aircraft overhead — rendering idle screen")
-        img = render_idle_frame(0, 0)
-        img_big = img.resize((MATRIX_WIDTH * 6, MATRIX_HEIGHT * 6), Image.NEAREST)
-        img_big.save("preview_idle.png")
+        img = render_idle_frame(0)
+        img.resize((MATRIX_WIDTH * 6, MATRIX_HEIGHT * 6), Image.NEAREST).save("preview_idle.png")
         log.info("Saved preview_idle.png")
         return
 
     for i, ac in enumerate(aircraft_list[:3]):
         cs    = ac.get("callsign", "TEST")
         route = get_route(cs)
-        img   = render_aircraft_frame(ac, route, 0)
-        # Scale up 6x so it's visible
-        img_big = img.resize((MATRIX_WIDTH * 6, MATRIX_HEIGHT * 6), Image.NEAREST)
-        fname = f"preview_{i+1}_{cs}.png"
-        img_big.save(fname)
-        log.info(f"Saved {fname} — {cs}")
+
+        img1 = render_page1(ac, route, 0)
+        img1.resize((MATRIX_WIDTH * 6, MATRIX_HEIGHT * 6), Image.NEAREST).save(f"preview_{i+1}_{cs}_page1.png")
+
+        img2 = render_page2(ac, route, 0)
+        img2.resize((MATRIX_WIDTH * 6, MATRIX_HEIGHT * 6), Image.NEAREST).save(f"preview_{i+1}_{cs}_page2.png")
+
+        log.info(f"Saved preview_{i+1}_{cs}_page1.png and page2.png")
 
 
 if __name__ == "__main__":
