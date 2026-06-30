@@ -316,15 +316,24 @@ def render_idle_frame(frame=0):
     brightness = int(40 + 30 * math.sin(frame * 0.15))
     pulse_col  = (0, brightness, brightness + 20)
 
-    draw.ellipse([28, 8, 36, 16], outline=pulse_col)
-    draw.ellipse([30, 10, 34, 14], fill=pulse_col)
+    draw.ellipse([28, 6, 36, 14], outline=pulse_col)
+    draw.ellipse([30, 8, 34, 12], fill=pulse_col)
 
-    draw.text((8, 18), "NO AIRCRAFT", font=FONT_SM, fill=DIM)
+    # Centre "NO AIRCRAFT" horizontally and make sure it actually fits
+    label = "NO AIRCRAFT"
+    l_bbox = draw.textbbox((0, 0), label, font=FONT_SM)
+    l_w = l_bbox[2] - l_bbox[0]
+    if l_w > MATRIX_WIDTH - 2:
+        label = "NO TRAFFIC"  # shorter fallback if font renders wider than expected
+        l_bbox = draw.textbbox((0, 0), label, font=FONT_SM)
+        l_w = l_bbox[2] - l_bbox[0]
+    draw.text((max(0, (MATRIX_WIDTH - l_w) // 2), 17), label, font=FONT_SM, fill=DIM)
 
+    # Time — keep well clear of the bottom edge so it isn't clipped
     now = datetime.now().strftime("%H:%M")
     t_bbox = draw.textbbox((0, 0), now, font=FONT_SM)
     t_w = t_bbox[2] - t_bbox[0]
-    draw.text(((MATRIX_WIDTH - t_w) // 2, 25), now, font=FONT_SM, fill=GREY)
+    draw.text(((MATRIX_WIDTH - t_w) // 2, 23), now, font=FONT_SM, fill=GREY)
 
     return img
 
