@@ -38,7 +38,7 @@ THINKCENTRE_API   = "http://192.168.68.53:5050"
 ADSBDB_API        = "https://api.adsbdb.com/v0/callsign"
 
 POLL_INTERVAL     = 30       # seconds between API polls
-PAGE_DWELL_TIME   = 4        # seconds to show each page
+PAGE_DWELL_TIME   = 6        # seconds to show each page
 ACTIVE_BRIGHTNESS = 80
 
 MATRIX_WIDTH      = 64
@@ -201,61 +201,114 @@ def format_speed(spd):
     return f"{int(spd)} kts"
 
 
-def short_aircraft_type(model):
-    if not model or model == "Unknown":
-        return None
-    m = model.upper()
-    if   "A380" in m: return "A380"
-    elif "A350" in m: return "A350"
-    elif "A340" in m: return "A340"
-    elif "A330" in m: return "A330"
-    elif "A321" in m: return "A321"
-    elif "A320" in m: return "A320"
-    elif "A319" in m: return "A319"
-    elif "A220" in m: return "A220"
-    elif "787"  in m: return "B787"
-    elif "777"  in m: return "B777"
-    elif "767"  in m: return "B767"
-    elif "757"  in m: return "B757"
-    elif "747"  in m: return "B747"
-    elif "737"  in m: return "B737"
-    elif "717"  in m: return "B717"
-    elif "ERJ"  in m: return "E190"
-    elif "E190" in m: return "E190"
-    elif "E175" in m: return "E175"
-    elif "ATR"  in m: return "ATR72"
-    elif "DHC"  in m: return "DASH8"
-    elif "AW139" in m:return "H139"
-    elif "F28"  in m: return "F100"
+# Fallback aircraft types by callsign prefix when model DB has no entry
+CALLSIGN_AIRCRAFT_TYPES = {
+    "SIA": "A350",    # Singapore Airlines BNE routes are all A350
+    "UAE": "A380",    # Emirates BNE is A380
+    "ANZ": "B777",    # Air NZ BNE is 777
+    "CAL": "A350",    # China Airlines BNE is A350
+    "CPA": "A350",    # Cathay Pacific
+    "MAS": "A330",    # Malaysia Airlines
+    "THA": "A330",    # Thai Airways
+    "QTR": "B787",    # Qatar Airways
+    "FJI": "A330",    # Fiji Airways
+    "PAL": "A330",    # Philippine Airlines
+    "HVN": "A350",    # Vietnam Airlines
+    "GIA": "A330",    # Garuda Indonesia
+}
+
+
+def short_aircraft_type(model, callsign=None):
+    if model and model != "Unknown":
+        m = model.upper()
+        if   "A380" in m: return "A380"
+        elif "A350" in m: return "A350"
+        elif "A340" in m: return "A340"
+        elif "A330" in m: return "A330"
+        elif "A321" in m: return "A321"
+        elif "A320" in m: return "A320"
+        elif "A319" in m: return "A319"
+        elif "A220" in m: return "A220"
+        elif "787"  in m: return "B787"
+        elif "777"  in m: return "B777"
+        elif "767"  in m: return "B767"
+        elif "757"  in m: return "B757"
+        elif "747"  in m: return "B747"
+        elif "737"  in m: return "B737"
+        elif "717"  in m: return "B717"
+        elif "ERJ"  in m: return "E190"
+        elif "E190" in m: return "E190"
+        elif "E175" in m: return "E175"
+        elif "ATR"  in m: return "ATR72"
+        elif "DHC"  in m: return "DASH8"
+        elif "AW139" in m:return "H139"
+        elif "F28"  in m: return "F100"
+    # Fall back to callsign-based lookup
+    if callsign:
+        code = "".join(c for c in callsign if c.isalpha())[:3].upper()
+        if code in CALLSIGN_AIRCRAFT_TYPES:
+            return CALLSIGN_AIRCRAFT_TYPES[code]
     return None
 
 
 # ── PAGE 1: LOGO + CALLSIGN + TYPE ────────────────────────────────────────────
+# ── AIRLINE NAME FALLBACKS ────────────────────────────────────────────────────
+AIRLINE_NAMES = {
+    "QFA": "Qantas", "QLK": "QantasLink", "JST": "Jetstar",
+    "VOZ": "Virgin Australia", "UAE": "Emirates",
+    "ANZ": "Air New Zealand", "SIA": "Singapore Airlines",
+    "CAL": "China Airlines", "CPA": "Cathay Pacific",
+    "MAS": "Malaysia Airlines", "THA": "Thai Airways",
+    "FJI": "Fiji Airways", "CES": "China Eastern",
+    "CSN": "China Southern", "KAL": "Korean Air",
+    "AAR": "Asiana Airlines", "JAL": "Japan Airlines",
+    "ANA": "All Nippon Airways", "PAL": "Philippine Airlines",
+    "HVN": "Vietnam Airlines", "GIA": "Garuda Indonesia",
+    "QTR": "Qatar Airways", "THY": "Turkish Airlines",
+    "AFR": "Air France", "DLH": "Lufthansa",
+    "BAW": "British Airways", "KLM": "KLM",
+    "DAL": "Delta", "UAL": "United", "AAL": "American Airlines",
+    "RSCU": "Rescue", "AMB": "Ambulance",
+}
+
+def resolve_airline_name(callsign, route):
+    if route:
+        name = route.get("airline", {}).get("name")
+        if name:
+            return name
+    code = airline_code_from_callsign(callsign)
+    if code:
+        return AIRLINE_NAMES.get(code)
+    return None
+
+
 def render_page1(ac, route, frame=0):
     img  = Image.new("RGB", (MATRIX_WIDTH, MATRIX_HEIGHT), BLACK)
     draw = ImageDraw.Draw(img)
 
-    callsign = ac.get("callsign", "?")
-    ac_type  = short_aircraft_type(ac.get("model", ""))
-    airline_name = route.get("airline", {}).get("name") if route else None
+    callsign     = ac.get("callsign", "?")
+    ac_type      = short_aircraft_type(ac.get("model", ""), callsign)
+    airline_name = resolve_airline_name(callsign, route)
 
-    logo = get_logo(callsign, airline_name, size=20)
-    img.paste(logo, (2, 6), logo)
+    # Row 1: Callsign (cyan, large, full width)
+    draw_text(draw, 2, 1, callsign, FONT_LG, CYAN, max_width=60)
 
-    draw_text(draw, 25, 3, callsign, FONT_LG, CYAN, max_width=37)
-
+    # Row 2: Aircraft type
     if ac_type:
-        draw.text((25, 14), ac_type, font=FONT_MED, fill=AMBER)
+        draw.text((2, 12), ac_type, font=FONT_MED, fill=AMBER)
 
-    name = airline_name or "Unknown airline"
-    full = name[:30]
-    if len(full) > 10:
-        scroll_offset = (frame // 3) % max(1, len(full) - 9)
-        visible = full[scroll_offset:scroll_offset + 10]
+    # Divider
+    draw.line([(0, 21), (MATRIX_WIDTH, 21)], fill=DIM)
+
+    # Row 3: Airline name — y=22, font is 7px tall so bottom at ~y=29, safely within 32px
+    name = airline_name or "Unknown"
+    full = name[:40]
+    if len(full) > 13:
+        scroll_offset = (frame // 5) % max(1, len(full) - 12)
+        visible = full[scroll_offset:scroll_offset + 13]
     else:
         visible = full
-    draw.line([(0, 24), (MATRIX_WIDTH, 24)], fill=DIM)
-    draw.text((2, 26), visible, font=FONT_SM, fill=GREY)
+    draw.text((2, 22), visible, font=FONT_SM, fill=GREY)
 
     return img
 
