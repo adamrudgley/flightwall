@@ -129,7 +129,7 @@ def fetch_aircraft():
     try:
         r = requests.get(
             f"{THINKCENTRE_API}/current",
-            params={"minutes": 2, "radius_km": 5, "min_alt": 1000},
+            params={"minutes": 2, "radius_km": 8, "min_alt": 1000},
             timeout=5,
         )
         r.raise_for_status()
@@ -219,8 +219,9 @@ def vert_rate_arrow(vrate):
 
 def format_alt(alt):
     if alt is None: return "—"
-    if alt >= 1000: return f"{alt//1000}k ft"
-    return f"{alt} ft"
+    if alt >= 10000: return f"{alt//1000}k"        # 12k, 35k
+    if alt >= 1000:  return f"{alt/1000:.1f}k"     # 1.2k, 2.9k
+    return f"{alt}ft"                               # 875ft
 
 
 def format_speed(spd):
