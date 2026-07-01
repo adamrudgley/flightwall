@@ -106,15 +106,42 @@ def get_route(callsign):
 
 
 # ── AIRCRAFT DATA ─────────────────────────────────────────────────────────────
+_common_type_cache = {}
+
+def get_common_type(callsign):
+    """Look up the most commonly seen model for a callsign from the ThinkCentre DB."""
+    if callsign in _common_type_cache:
+        return _common_type_cache[callsign]
+    try:
+        r = requests.get(f"{THINKCENTRE_API}/common_type",
+                         params={"callsign": callsign}, timeout=5)
+        if r.ok:
+            model = r.json().get("model")
+            _common_type_cache[callsign] = model
+            return model
+    except Exception:
+        pass
+    _common_type_cache[callsign] = None
+    return None
+
+
 def fetch_aircraft():
     try:
         r = requests.get(
             f"{THINKCENTRE_API}/current",
-            params={"minutes": 3, "radius_km": 5, "min_alt": 1000},
+            params={"minutes": 2, "radius_km": 5, "min_alt": 1000},
             timeout=5,
         )
         r.raise_for_status()
-        return r.json().get("aircraft", [])
+        aircraft = r.json().get("aircraft", [])
+        # Fill in missing models from historical data
+        for ac in aircraft:
+            if not ac.get("model") or ac["model"] == "Unknown":
+                common = get_common_type(ac.get("callsign", ""))
+                if common:
+                    ac["model"] = common
+                    log.info(f"  {ac['callsign']}: model filled from history → {common}")
+        return aircraft
     except Exception as e:
         log.error(f"Failed to fetch aircraft: {e}")
         return []

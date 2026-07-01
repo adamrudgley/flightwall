@@ -221,6 +221,40 @@ def track():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/common_type")
+def common_type():
+    """
+    Returns the most commonly seen aircraft model for a given callsign.
+    Used as a fallback when the current observation has no model.
+    Query params:
+      callsign  str  required
+    """
+    callsign = request.args.get("callsign", "").upper().strip()
+    if not callsign:
+        return jsonify({"error": "callsign required"}), 400
+    try:
+        sql = """
+            SELECT a.model, COUNT(*) as cnt
+            FROM observations o
+            LEFT JOIN aircraft_db a ON LOWER(o.icao) = a.icao
+            WHERE o.callsign = %s
+              AND a.model IS NOT NULL
+              AND a.model != ''
+            GROUP BY a.model
+            ORDER BY cnt DESC
+            LIMIT 1
+        """
+        with get_db() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (callsign,))
+            row = cur.fetchone()
+        if row:
+            return jsonify({"callsign": callsign, "model": row["model"], "count": row["cnt"]})
+        return jsonify({"callsign": callsign, "model": None})
+    except Exception as e:
+        log.error(f"Common type error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/health")
 def health():
     return jsonify({"status": "ok"})
