@@ -37,7 +37,7 @@ from PIL import Image, ImageDraw, ImageFont
 THINKCENTRE_API   = "http://192.168.68.53:5050"
 ADSBDB_API        = "https://api.adsbdb.com/v0/callsign"
 
-POLL_INTERVAL     = 30       # seconds between API polls
+POLL_INTERVAL     = 15       # seconds between API polls
 PAGE_DWELL_TIME   = 6        # seconds to show each page
 ACTIVE_BRIGHTNESS = 80
 
@@ -485,17 +485,48 @@ def main():
     page          = 1            # 1 or 2
     frame         = 0
     page_frames   = PAGE_DWELL_TIME * 10  # at ~10fps
+    missed_polls  = {}           # callsign -> consecutive missed poll count
 
     while True:
         now = time.time()
 
         if now - last_poll > POLL_INTERVAL:
             log.info("Polling for aircraft…")
-            aircraft_list = fetch_aircraft()
-            log.info(f"Found {len(aircraft_list)} aircraft overhead")
+            fresh = fetch_aircraft()
+            fresh_callsigns = {ac.get("callsign") for ac in fresh}
+
+            # Increment missed counter for absent aircraft, reset for present ones
+            for ac in aircraft_list:
+                cs = ac.get("callsign")
+                if cs not in fresh_callsigns:
+                    missed_polls[cs] = missed_polls.get(cs, 0) + 1
+                else:
+                    missed_polls[cs] = 0
+
+            # Drop aircraft missing for 2+ consecutive polls (~30s)
+            dropped = {cs for cs, m in missed_polls.items() if m >= 2}
+            if dropped:
+                log.info(f"Dropping landed/gone: {dropped}")
+                for cs in dropped:
+                    del missed_polls[cs]
+
+            # Merge: update existing with fresh data, drop landed, add new arrivals
+            fresh_map = {ac["callsign"]: ac for ac in fresh if ac.get("callsign")}
+            new_list = []
+            for ac in aircraft_list:
+                cs = ac.get("callsign")
+                if cs in dropped:
+                    continue
+                new_list.append(fresh_map.pop(cs, ac))  # use fresh data if available
+            new_list.extend(fresh_map.values())          # add new arrivals
+
+            if len(new_list) != len(aircraft_list):
+                ac_index = 0
+                page = 1
+
+            aircraft_list = new_list
             last_poll = now
-            ac_index  = 0
-            page      = 1
+            log.info(f"Active: {[ac.get('callsign') for ac in aircraft_list]}")
 
             for ac in aircraft_list:
                 cs = ac.get("callsign")
