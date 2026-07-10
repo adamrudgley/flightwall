@@ -44,6 +44,137 @@ def get_db():
     return psycopg2.connect(DB_DSN)
 
 
+def lookup_route_aerodatabox(callsign):
+    """Look up route from AeroDataBox API (primary — better regional coverage)."""
+    try:
+        r = req_lib.get(
+            f"{AERO_URL}/{callsign}",
+            headers=AERO_HEADERS,
+            params={"withAircraftImage": "false", "withLocation": "false"},
+            timeout=8,
+        )
+        if not r.ok:
+            log.warning(f"AeroDataBox {callsign}: HTTP {r.status_code}")
+            return None
+        data = r.json()
+        # Response is a list of flights
+        flights = data if isinstance(data, list) else [data]
+        if not flights:
+            return None
+        f = flights[0]
+        dep = f.get("departure", {}).get("airport", {})
+        arr = f.get("arrival", {}).get("airport", {})
+        # Airline can be at top level or nested
+        airline_obj = f.get("airline", {})
+        airline = airline_obj.get("name") or airline_obj.get("iata") or airline_obj.get("icao")
+        origin_code = dep.get("icao") or dep.get("iata")
+        dest_code   = arr.get("icao") or arr.get("iata")
+        if origin_code and dest_code:
+            return {
+                "origin":      origin_code,
+                "destination": dest_code,
+                "origin_city": dep.get("municipalityName") or dep.get("shortName") or dep.get("name"),
+                "dest_city":   arr.get("municipalityName") or arr.get("shortName") or arr.get("name"),
+                "airline":     airline,
+                "source":      "aerodatabox",
+            }
+        log.warning(f"AeroDataBox {callsign}: missing origin/dest in response")
+    except Exception as e:
+        log.warning(f"AeroDataBox lookup failed for {callsign}: {e}")
+    return None
+
+
+def lookup_route_adsbdb(callsign):
+    """Look up route from adsbdb (fallback — free, no key needed)."""
+    try:
+        r = req_lib.get(f"{ADSBDB_URL}/{callsign}", timeout=6)
+        if not r.ok:
+            return None
+        fr = r.json().get("response", {}).get("flightroute")
+        if not fr:
+            return None
+        origin = fr.get("origin", {})
+        dest   = fr.get("destination", {})
+        if origin.get("iata_code") and dest.get("iata_code"):
+            return {
+                "origin":      origin.get("icao_code") or origin.get("iata_code"),
+                "destination": dest.get("icao_code") or dest.get("iata_code"),
+                "origin_city": origin.get("municipality"),
+                "dest_city":   dest.get("municipality"),
+                "airline":     fr.get("airline", {}).get("name"),
+                "source":      "adsbdb",
+            }
+    except Exception as e:
+        log.warning(f"adsbdb lookup failed for {callsign}: {e}")
+    return None
+
+
+def get_route(callsign):
+    """
+    Get route for a callsign. Checks PostgreSQL cache first,
+    then tries AeroDataBox, falls back to adsbdb. Caches result permanently.
+    """
+    if not callsign:
+        return None
+    try:
+        with get_db() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM route_cache WHERE callsign = %s", (callsign,))
+            cached = cur.fetchone()
+            if cached:
+                if cached["origin"]:  # cached and has data
+                    return dict(cached)
+                return None  # cached as "no route found"
+
+        # Not in cache — try AeroDataBox first, then adsbdb
+        route = None
+        if RAPIDAPI_KEY:
+            route = lookup_route_aerodatabox(callsign)
+        if not route:
+            route = lookup_route_adsbdb(callsign)
+
+        # Store in cache (even if None, to avoid repeated lookups)
+        with get_db() as conn, conn.cursor() as cur:
+            if route:
+                cur.execute("""
+                    INSERT INTO route_cache
+                        (callsign, origin, destination, origin_city, dest_city, airline, source)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (callsign) DO UPDATE SET
+                        origin=EXCLUDED.origin, destination=EXCLUDED.destination,
+                        origin_city=EXCLUDED.origin_city, dest_city=EXCLUDED.dest_city,
+                        airline=EXCLUDED.airline, source=EXCLUDED.source,
+                        cached_at=NOW()
+                """, (callsign, route["origin"], route["destination"],
+                      route["origin_city"], route["dest_city"],
+                      route["airline"], route["source"]))
+                log.info(f"Cached route {callsign}: {route['origin']} → {route['destination']} ({route['source']})")
+            else:
+                # Cache negative result so we don't keep calling the API
+                cur.execute("""
+                    INSERT INTO route_cache (callsign, origin)
+                    VALUES (%s, NULL)
+                    ON CONFLICT (callsign) DO NOTHING
+                """, (callsign,))
+
+        return route
+
+    except Exception as e:
+        log.error(f"Route lookup error for {callsign}: {e}")
+        return None
+
+
+@app.route("/route")
+def route_endpoint():
+    """Look up route for a callsign, using cache then APIs."""
+    callsign = request.args.get("callsign", "").upper().strip()
+    if not callsign:
+        return jsonify({"error": "callsign required"}), 400
+    route = get_route(callsign)
+    if route:
+        return jsonify({"callsign": callsign, "route": route})
+    return jsonify({"callsign": callsign, "route": None})
+
+
 @app.route("/ingest", methods=["POST"])
 def ingest():
     batch = request.get_json(force=True)

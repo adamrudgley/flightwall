@@ -35,8 +35,6 @@ from PIL import Image, ImageDraw, ImageFont
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 THINKCENTRE_API   = "http://192.168.68.53:5050"
-ADSBDB_API        = "https://api.adsbdb.com/v0/callsign"
-
 POLL_INTERVAL     = 15       # seconds between API polls
 PAGE_DWELL_TIME   = 6        # seconds to show each page
 ACTIVE_BRIGHTNESS = 80
@@ -48,13 +46,16 @@ LOGO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logos")
 
 # ── COLOURS ───────────────────────────────────────────────────────────────────
 BLACK   = (0,   0,   0)
-CYAN    = (0,   200, 220)
-WHITE   = (220, 220, 220)
-AMBER   = (255, 170, 0)
-GREEN   = (0,   200, 80)
-RED     = (220, 50,  50)
-GREY    = (60,  80,  100)
-DIM     = (20,  40,  60)
+WHITE   = (240, 240, 240)   # callsign, route airports — primary info
+ACCENT  = (0,   200, 220)   # aircraft type, altitude, speed — secondary info
+GREY    = (90,  110, 130)   # airline name, time — least important
+DIM     = (30,  45,  60)    # divider lines
+
+# Aliases so existing render code still works without changes
+CYAN    = ACCENT
+AMBER   = ACCENT
+GREEN   = ACCENT
+RED     = ACCENT
 
 MONOGRAM_PALETTE = [
     (200, 30, 40), (30, 100, 200), (220, 140, 0), (0, 150, 110),
@@ -91,14 +92,32 @@ FONT_LG  = load_font(10)
 _route_cache = {}
 
 def get_route(callsign):
+    """Get route from ThinkCentre receiver (which handles caching + AeroDataBox + adsbdb)."""
     if callsign in _route_cache:
         return _route_cache[callsign]
     try:
-        r = requests.get(f"{ADSBDB_API}/{callsign}", timeout=5)
+        r = requests.get(f"{THINKCENTRE_API}/route",
+                         params={"callsign": callsign}, timeout=8)
         if r.ok:
-            route = r.json().get("response", {}).get("flightroute")
-            _route_cache[callsign] = route
-            return route
+            data  = r.json()
+            route = data.get("route")
+            # Normalise to the format render functions expect
+            if route:
+                normalised = {
+                    "airline": {"name": route.get("airline")},
+                    "origin": {
+                        "iata_code":    route.get("origin", "")[-3:] if route.get("origin") else None,
+                        "icao_code":    route.get("origin"),
+                        "municipality": route.get("origin_city"),
+                    },
+                    "destination": {
+                        "iata_code":    route.get("destination", "")[-3:] if route.get("destination") else None,
+                        "icao_code":    route.get("destination"),
+                        "municipality": route.get("dest_city"),
+                    },
+                }
+                _route_cache[callsign] = normalised
+                return normalised
     except Exception as e:
         log.warning(f"Route lookup failed for {callsign}: {e}")
     _route_cache[callsign] = None
@@ -318,17 +337,17 @@ def render_page1(ac, route, frame=0):
     ac_type      = short_aircraft_type(ac.get("model", ""), callsign)
     airline_name = resolve_airline_name(callsign, route)
 
-    # Row 1: Callsign (cyan, large, full width)
-    draw_text(draw, 2, 1, callsign, FONT_LG, CYAN, max_width=60)
+    # Row 1: Callsign — WHITE, large, full width
+    draw_text(draw, 2, 1, callsign, FONT_LG, WHITE, max_width=60)
 
-    # Row 2: Aircraft type
+    # Row 2: Aircraft type — ACCENT colour
     if ac_type:
-        draw.text((2, 12), ac_type, font=FONT_MED, fill=AMBER)
+        draw.text((2, 12), ac_type, font=FONT_MED, fill=ACCENT)
 
     # Divider
     draw.line([(0, 21), (MATRIX_WIDTH, 21)], fill=DIM)
 
-    # Row 3: Airline name — y=22, font is 7px tall so bottom at ~y=29, safely within 32px
+    # Row 3: Airline name — GREY, scrolling
     name = airline_name or "Unknown"
     full = name[:40]
     if len(full) > 13:
@@ -347,7 +366,7 @@ def render_page2(ac, route, frame=0):
     draw = ImageDraw.Draw(img)
 
     callsign = ac.get("callsign", "?")
-    draw_text(draw, 1, 1, callsign, FONT_SM, CYAN, max_width=36)
+    draw_text(draw, 1, 1, callsign, FONT_SM, WHITE, max_width=36)
 
     now = datetime.now().strftime("%H:%M")
     t_bbox = draw.textbbox((0, 0), now, font=FONT_SM)
@@ -380,11 +399,11 @@ def render_page2(ac, route, frame=0):
     speed = format_speed(ac.get("ground_speed"))
     arrow = vert_rate_arrow(ac.get("vert_rate"))
 
-    draw.text((2, 24), f"{arrow}{alt}", font=FONT_SM, fill=AMBER)
+    draw.text((2, 24), f"{arrow}{alt}", font=FONT_SM, fill=ACCENT)
 
     spd_bbox = draw.textbbox((0, 0), speed, font=FONT_SM)
     spd_w = spd_bbox[2] - spd_bbox[0]
-    draw.text((MATRIX_WIDTH - spd_w - 2, 24), speed, font=FONT_SM, fill=GREEN)
+    draw.text((MATRIX_WIDTH - spd_w - 2, 24), speed, font=FONT_SM, fill=ACCENT)
 
     return img
 
@@ -429,9 +448,9 @@ def render_idle_frame(frame=0):
         trail_x = plane_x - i * 3
         if -4 <= trail_x <= MATRIX_WIDTH:
             fade = max(0, 60 - i * 12)
-            draw.point((trail_x, plane_y), fill=(0, fade, fade))
+            draw.point((trail_x, plane_y), fill=(0, fade//2, fade))
 
-    draw_plane_icon(draw, plane_x, plane_y, CYAN, scale=1)
+    draw_plane_icon(draw, plane_x, plane_y, ACCENT, scale=1)
 
     # Centre "NO AIRCRAFT" horizontally and make sure it actually fits
     label = "NO AIRCRAFT"
