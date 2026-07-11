@@ -111,32 +111,166 @@ def get_route(callsign):
                 # Strip leading Y for Australian airports as a simple fallback
                 def icao_to_display(code):
                     if not code: return "???"
-                    if len(code) == 3: return code          # already IATA
-                    # Common Australian conversions
-                    au_map = {
-                        "YBBN":"BNE","YSSY":"SYD","YMML":"MEL","YPER":"PER",
-                        "YPAD":"ADL","YBCS":"CNS","YBCG":"OOL","YBSU":"MCY",
-                        "YCOM":"HBA","YSCB":"CBR","YDBY":"DRW","YBRK":"ROK",
-                        "YMAV":"AVV","YTYA":"TSV","YMHB":"HBA","YMLT":"LST",
-                        "YBAF":"BAF","YHBA":"HVB","YBOK":"BQL","YGYM":"GYP",
-                        "YTWB":"TWB","YCDR":"CDR","YWLM":"WLM","YOLW":"OLW",
-                        "YMEN":"MEB","YMTG":"MGB","YPPH":"PER","YTMM":"MIM",
-                        # International
-                        "OTHH":"DOH","OMDB":"DXB","WSSS":"SIN","VHHH":"HKG",
-                        "KLAX":"LAX","KSFO":"SFO","KJFK":"JFK","KDFW":"DFW",
-                        "EGLL":"LHR","LFPG":"CDG","EDDF":"FRA","EHAM":"AMS",
-                        "ZBAA":"PEK","ZSPD":"PVG","RJTT":"HND","RKSI":"ICN",
-                        "VTBS":"BKK","WMKK":"KUL","WIII":"CGK","NZAA":"AKL",
-                        "NZCH":"CHC","NZWN":"WLG","FMEP":"RUN","VVTS":"SGN",
-                        "RPLL":"MNL","VRMM":"MLE","HAAB":"ADD","FACT":"CPT",
-                        "AYPY":"POM","AYWK":"WWK","AYMD":"MAG","AYGA":"GKA",
-                        "NFTF":"TBU","NFFA":"SUV","NFFN":"NAN","NVVV":"VLI",
-                        "AGGH":"HIR","PHNL":"HNL","PGUM":"GUM",
-                        "OEJN":"JED","OEDF":"DMM","OLBA":"BEY",
-                        "VABB":"BOM","VIDP":"DEL","VOMM":"MAA","VOBL":"BLR",
-                        "VCBI":"CMB","VNKT":"KTM",
+                    if len(code) == 3: return code  # already IATA
+                    ICAO_TO_IATA = {
+                        # ── Australian airports ──────────────────────────────
+                        "YBBN":"BNE",  # Brisbane
+                        "YSSY":"SYD",  # Sydney
+                        "YMML":"MEL",  # Melbourne Tullamarine
+                        "YMEN":"MEB",  # Melbourne Essendon
+                        "YMAV":"AVV",  # Melbourne Avalon
+                        "YPPH":"PER",  # Perth
+                        "YPAD":"ADL",  # Adelaide
+                        "YPDN":"DRW",  # Darwin
+                        "YMHB":"HBA",  # Hobart
+                        "YMLT":"LST",  # Launceston
+                        "YSCB":"CBR",  # Canberra
+                        "YBCS":"CNS",  # Cairns
+                        "YBCG":"OOL",  # Gold Coast
+                        "YBSU":"MCY",  # Sunshine Coast
+                        "YBMK":"MKY",  # Mackay
+                        "YBTL":"TSV",  # Townsville
+                        "YBRK":"ROK",  # Rockhampton
+                        "YBPN":"PPP",  # Proserpine/Whitsunday Coast
+                        "YHID":"HTI",  # Hamilton Island
+                        "YBMA":"ISA",  # Mount Isa
+                        "YLRE":"LRE",  # Longreach
+                        "YROM":"RMA",  # Roma
+                        "YHBA":"HVB",  # Hervey Bay
+                        "YBNA":"BNA",  # Ballina
+                        "YCFS":"CFS",  # Coffs Harbour
+                        "YARM":"ARM",  # Armidale
+                        "YWLM":"NTL",  # Newcastle/Williamtown
+                        "YWOL":"WOL",  # Wollongong
+                        "YDBO":"DBO",  # Dubbo
+                        "YORG":"OAG",  # Orange
+                        "YSWG":"WGA",  # Wagga Wagga
+                        "YTMW":"TMW",  # Tamworth
+                        "YTWB":"TWB",  # Toowoomba
+                        "YGYM":"GYP",  # Goondiwindi
+                        "YBOK":"BQL",  # Boulia
+                        "YNTN":"NTN",  # Normanton
+                        "YMIG":"MGB",  # Mount Gambier
+                        "YPKG":"KGI",  # Kalgoorlie
+                        "YGED":"GET",  # Geraldton
+                        "YPHD":"PHE",  # Port Hedland
+                        "YBRM":"BME",  # Broome
+                        "YKAR":"KAR",  # Karatha
+                        "YNBR":"NRA",  # Narrabri
+                        "YBHI":"BHQ",  # Broken Hill
+                        "YPMC":"PQQ",  # Port Macquarie
+                        "YLIS":"LSY",  # Lismore
+                        "YMIA":"MIM",  # Merimbula
+                        "YOLA":"OLA",  # Longreach alt
+                        "YBAF":"BAF",  # Bankstown
+                        "YRED":"RCM",  # Richmond
+                        "YCDR":"CED",  # Ceduna
+                        "YMCO":"MCV",  # Mcarthur River
+                        # ── New Zealand ──────────────────────────────────────
+                        "NZAA":"AKL",  # Auckland
+                        "NZCH":"CHC",  # Christchurch
+                        "NZWN":"WLG",  # Wellington
+                        "NZQN":"ZQN",  # Queenstown
+                        "NZDN":"DUD",  # Dunedin
+                        "NZPM":"PMR",  # Palmerston North
+                        "NZNR":"NPE",  # Napier/Hastings
+                        "NZRO":"ROT",  # Rotorua
+                        "NZNS":"NSN",  # Nelson
+                        "NZHN":"HLZ",  # Hamilton
+                        # ── Pacific ──────────────────────────────────────────
+                        "AYPY":"POM",  # Port Moresby
+                        "AYWK":"WWK",  # Wewak
+                        "AYGA":"GKA",  # Goroka
+                        "NFFN":"NAN",  # Nadi (Fiji)
+                        "NFFA":"SUV",  # Suva (Fiji)
+                        "NFTF":"TBU",  # Nuku'alofa (Tonga)
+                        "NVVV":"VLI",  # Port Vila (Vanuatu)
+                        "AGGH":"HIR",  # Honiara (Solomon Is)
+                        "NGFU":"FUN",  # Funafuti (Tuvalu)
+                        "PHNL":"HNL",  # Honolulu
+                        "PGUM":"GUM",  # Guam
+                        "NWWW":"NOU",  # Noumea
+                        # ── Asia ─────────────────────────────────────────────
+                        "WSSS":"SIN",  # Singapore Changi
+                        "VHHH":"HKG",  # Hong Kong
+                        "RJTT":"HND",  # Tokyo Haneda
+                        "RJAA":"NRT",  # Tokyo Narita
+                        "RKSI":"ICN",  # Seoul Incheon
+                        "RKSS":"GMP",  # Seoul Gimpo
+                        "ZBAA":"PEK",  # Beijing Capital
+                        "ZBAD":"PKX",  # Beijing Daxing
+                        "ZSPD":"PVG",  # Shanghai Pudong
+                        "ZSSS":"SHA",  # Shanghai Hongqiao
+                        "ZGGG":"CAN",  # Guangzhou
+                        "ZGSZ":"SZX",  # Shenzhen
+                        "ZUCK":"CKG",  # Chongqing
+                        "ZUUU":"CTU",  # Chengdu
+                        "VTBS":"BKK",  # Bangkok Suvarnabhumi
+                        "VTBD":"DMK",  # Bangkok Don Mueang
+                        "WMKK":"KUL",  # Kuala Lumpur
+                        "WIII":"CGK",  # Jakarta
+                        "WADD":"DPS",  # Bali Denpasar
+                        "RPLL":"MNL",  # Manila
+                        "VVTS":"SGN",  # Ho Chi Minh City
+                        "VVNB":"HAN",  # Hanoi
+                        "VNKT":"KTM",  # Kathmandu
+                        "VCBI":"CMB",  # Colombo
+                        "VABB":"BOM",  # Mumbai
+                        "VIDP":"DEL",  # Delhi
+                        "VOMM":"MAA",  # Chennai
+                        "VOBL":"BLR",  # Bangalore
+                        "VECC":"CCU",  # Kolkata
+                        # ── Middle East ───────────────────────────────────────
+                        "OTHH":"DOH",  # Doha
+                        "OMDB":"DXB",  # Dubai
+                        "OMAA":"AUH",  # Abu Dhabi
+                        "OEJN":"JED",  # Jeddah
+                        "OEDF":"DMM",  # Dammam
+                        "OERK":"RUH",  # Riyadh
+                        "OLBA":"BEY",  # Beirut
+                        # ── Europe ────────────────────────────────────────────
+                        "EGLL":"LHR",  # London Heathrow
+                        "EGKK":"LGW",  # London Gatwick
+                        "LFPG":"CDG",  # Paris CDG
+                        "EDDF":"FRA",  # Frankfurt
+                        "EHAM":"AMS",  # Amsterdam
+                        "LEMD":"MAD",  # Madrid
+                        "LEBL":"BCN",  # Barcelona
+                        "LIRF":"FCO",  # Rome Fiumicino
+                        "LSZH":"ZRH",  # Zurich
+                        "LSGG":"GVA",  # Geneva
+                        "EDDM":"MUC",  # Munich
+                        "LOWW":"VIE",  # Vienna
+                        "EKCH":"CPH",  # Copenhagen
+                        "ESSA":"ARN",  # Stockholm
+                        "ENGM":"OSL",  # Oslo
+                        "EFHK":"HEL",  # Helsinki
+                        # ── North America ─────────────────────────────────────
+                        "KLAX":"LAX",  # Los Angeles
+                        "KSFO":"SFO",  # San Francisco
+                        "KJFK":"JFK",  # New York JFK
+                        "KEWR":"EWR",  # New York Newark
+                        "KORD":"ORD",  # Chicago O'Hare
+                        "KDFW":"DFW",  # Dallas
+                        "KIAH":"IAH",  # Houston
+                        "KATL":"ATL",  # Atlanta
+                        "KSEA":"SEA",  # Seattle
+                        "KVNC":"VNC",  # Venice FL
+                        "CYVR":"YVR",  # Vancouver
+                        "CYYZ":"YYZ",  # Toronto
+                        # ── Africa ────────────────────────────────────────────
+                        "FACT":"CPT",  # Cape Town
+                        "FAJS":"JNB",  # Johannesburg
+                        "HAAB":"ADD",  # Addis Ababa
+                        "HECA":"CAI",  # Cairo
+                        "HTDA":"DAR",  # Dar es Salaam
+                        "FNLU":"LAD",  # Luanda
+                        # ── South America ─────────────────────────────────────
+                        "SBGR":"GRU",  # Sao Paulo
+                        "SCEL":"SCL",  # Santiago
+                        "SAEZ":"EZE",  # Buenos Aires
                     }
-                    return au_map.get(code, code[-3:])  # fallback: last 3 chars
+                    return ICAO_TO_IATA.get(code, code[-3:])  # fallback: last 3 chars
 
                 normalised = {
                     "airline": {"name": route.get("airline")},
