@@ -266,9 +266,9 @@ def draw_text(draw, x, y, text, font, color, max_width=None):
 
 def vert_rate_arrow(vrate):
     if vrate is None: return ""
-    if vrate > 200:  return "↑"
-    if vrate < -200: return "↓"
-    return "→"
+    if vrate > 200:  return "+"
+    if vrate < -200: return "-"
+    return ""
 
 
 def format_alt(alt):
@@ -386,8 +386,12 @@ def render_page1(ac, route, frame=0):
     name = airline_name or "Unknown"
     full = name[:40]
     if len(full) > 13:
-        scroll_offset = (frame // 5) % max(1, len(full) - 12)
-        visible = full[scroll_offset:scroll_offset + 13]
+        # Continuous circular scroll — text wraps around seamlessly
+        # Pad with spaces so the end wraps back to the start
+        padded = full + "   " + full   # text + gap + repeat
+        cycle_len = len(full) + 3      # full name + 3 space gap
+        scroll_offset = (frame // 4) % cycle_len
+        visible = padded[scroll_offset:scroll_offset + 13]
     else:
         visible = full
     draw.text((2, 22), visible, font=FONT_SM, fill=GREY)
