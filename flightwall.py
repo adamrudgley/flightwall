@@ -45,17 +45,18 @@ MATRIX_HEIGHT     = 32
 LOGO_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logos")
 
 # ── COLOURS ───────────────────────────────────────────────────────────────────
+# Panel renders (255,255,255) as bright red — use brightness levels for hierarchy
 BLACK   = (0,   0,   0)
-WHITE   = (240, 240, 240)   # callsign, route airports — primary info
-ACCENT  = (0,   200, 220)   # aircraft type, altitude, speed — secondary info
-GREY    = (90,  110, 130)   # airline name, time — least important
-DIM     = (30,  45,  60)    # divider lines
+WHITE   = (255, 255, 255)  # bright — callsign, route airports (primary)
+ACCENT  = (180, 180, 180)  # medium — aircraft type, altitude, speed (secondary)
+GREY    = (80,  80,  80)   # dim — airline name, time (least important)
+DIM     = (30,  30,  30)   # very dim — divider lines
 
-# Aliases so existing render code still works without changes
+# Aliases
 CYAN    = ACCENT
 AMBER   = ACCENT
 GREEN   = ACCENT
-RED     = ACCENT
+RED     = WHITE
 
 MONOGRAM_PALETTE = [
     (200, 30, 40), (30, 100, 200), (220, 140, 0), (0, 150, 110),
@@ -103,16 +104,50 @@ def get_route(callsign):
             route = data.get("route")
             # Normalise to the format render functions expect
             if route:
+                # Convert ICAO to IATA where possible (YBBN->BNE, YSSY->SYD etc)
+                origin_code = route.get("origin", "")
+                dest_code   = route.get("destination", "")
+                # AeroDataBox stores ICAO (4 chars), adsbdb stores IATA (3 chars)
+                # Strip leading Y for Australian airports as a simple fallback
+                def icao_to_display(code):
+                    if not code: return "???"
+                    if len(code) == 3: return code          # already IATA
+                    # Common Australian conversions
+                    au_map = {
+                        "YBBN":"BNE","YSSY":"SYD","YMML":"MEL","YPER":"PER",
+                        "YPAD":"ADL","YBCS":"CNS","YBCG":"OOL","YBSU":"MCY",
+                        "YCOM":"HBA","YSCB":"CBR","YDBY":"DRW","YBRK":"ROK",
+                        "YMAV":"AVV","YTYA":"TSV","YMHB":"HBA","YMLT":"LST",
+                        "YBAF":"BAF","YHBA":"HVB","YBOK":"BQL","YGYM":"GYP",
+                        "YTWB":"TWB","YCDR":"CDR","YWLM":"WLM","YOLW":"OLW",
+                        "YMEN":"MEB","YMTG":"MGB","YPPH":"PER","YTMM":"MIM",
+                        # International
+                        "OTHH":"DOH","OMDB":"DXB","WSSS":"SIN","VHHH":"HKG",
+                        "KLAX":"LAX","KSFO":"SFO","KJFK":"JFK","KDFW":"DFW",
+                        "EGLL":"LHR","LFPG":"CDG","EDDF":"FRA","EHAM":"AMS",
+                        "ZBAA":"PEK","ZSPD":"PVG","RJTT":"HND","RKSI":"ICN",
+                        "VTBS":"BKK","WMKK":"KUL","WIII":"CGK","NZAA":"AKL",
+                        "NZCH":"CHC","NZWN":"WLG","FMEP":"RUN","VVTS":"SGN",
+                        "RPLL":"MNL","VRMM":"MLE","HAAB":"ADD","FACT":"CPT",
+                        "AYPY":"POM","AYWK":"WWK","AYMD":"MAG","AYGA":"GKA",
+                        "NFTF":"TBU","NFFA":"SUV","NFFN":"NAN","NVVV":"VLI",
+                        "AGGH":"HIR","PHNL":"HNL","PGUM":"GUM",
+                        "OEJN":"JED","OEDF":"DMM","OLBA":"BEY",
+                        "VABB":"BOM","VIDP":"DEL","VOMM":"MAA","VOBL":"BLR",
+                        "VCBI":"CMB","VNKT":"KTM",
+                    }
+                    return au_map.get(code, code[-3:])  # fallback: last 3 chars
+
                 normalised = {
                     "airline": {"name": route.get("airline")},
                     "origin": {
-                        "iata_code":    route.get("origin", "")[-3:] if route.get("origin") else None,
-                        "icao_code":    route.get("origin"),
+                        "iata_code":    icao_to_display(origin_code),
+                        "icao_code":    origin_code,
                         "municipality": route.get("origin_city"),
                     },
                     "destination": {
-                        "iata_code":    route.get("destination", "")[-3:] if route.get("destination") else None,
-                        "icao_code":    route.get("destination"),
+                        "iata_code":    icao_to_display(dest_code),
+                        "icao_code":    dest_code,
                         "municipality": route.get("dest_city"),
                     },
                 }
@@ -437,32 +472,31 @@ def render_idle_frame(frame=0):
     img  = Image.new("RGB", (MATRIX_WIDTH, MATRIX_HEIGHT), BLACK)
     draw = ImageDraw.Draw(img)
 
-    # ── Animated plane flying left -> right with a fading trail ──────────
-    cycle_len   = 90  # frames for one full crossing (~9s at 10fps)
-    t           = (frame % cycle_len) / cycle_len
-    plane_x     = int(-8 + t * (MATRIX_WIDTH + 16))
-    plane_y     = 7 + int(2 * math.sin(t * math.pi * 2))  # gentle bob
+    # Animated plane flying left to right with fading trail
+    cycle_len = 90
+    t         = (frame % cycle_len) / cycle_len
+    plane_x   = int(-8 + t * (MATRIX_WIDTH + 16))
+    plane_y   = 7 + int(2 * math.sin(t * math.pi * 2))
 
-    # Fading trail behind the plane
     for i in range(1, 6):
         trail_x = plane_x - i * 3
         if -4 <= trail_x <= MATRIX_WIDTH:
             fade = max(0, 60 - i * 12)
             draw.point((trail_x, plane_y), fill=(0, fade//2, fade))
 
-    draw_plane_icon(draw, plane_x, plane_y, ACCENT, scale=1)
+    draw_plane_icon(draw, plane_x, plane_y, WHITE, scale=1)
 
-    # Centre "NO AIRCRAFT" horizontally and make sure it actually fits
+    # "NO AIRCRAFT" centred — WHITE text, properly within panel
     label = "NO AIRCRAFT"
     l_bbox = draw.textbbox((0, 0), label, font=FONT_SM)
     l_w = l_bbox[2] - l_bbox[0]
     if l_w > MATRIX_WIDTH - 2:
-        label = "NO TRAFFIC"  # shorter fallback if font renders wider than expected
+        label = "NO TRAFFIC"
         l_bbox = draw.textbbox((0, 0), label, font=FONT_SM)
         l_w = l_bbox[2] - l_bbox[0]
-    draw.text((max(0, (MATRIX_WIDTH - l_w) // 2), 17), label, font=FONT_SM, fill=DIM)
+    draw.text((max(0, (MATRIX_WIDTH - l_w) // 2), 17), label, font=FONT_SM, fill=WHITE)
 
-    # Time — keep well clear of the bottom edge so it isn't clipped
+    # Time centred at bottom — GREY, safely within 32px
     now = datetime.now().strftime("%H:%M")
     t_bbox = draw.textbbox((0, 0), now, font=FONT_SM)
     t_w = t_bbox[2] - t_bbox[0]
