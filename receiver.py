@@ -7,11 +7,20 @@ receiver.py — Flask API
   GET  /health   — health check
 """
 import os
+import requests as req_lib
 import logging
 import psycopg2
 import psycopg2.extras
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+
+RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
+ADSBDB_URL   = "https://api.adsbdb.com/v0/callsign"
+AERO_URL     = "https://aerodatabox.p.rapidapi.com/flights/callsign"
+AERO_HEADERS = {
+    "X-RapidAPI-Key":  RAPIDAPI_KEY,
+    "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com",
+}
 
 DB_DSN = (
     f"host={os.environ.get('DB_HOST', 'postgres')} "
@@ -391,10 +400,6 @@ def health():
     return jsonify({"status": "ok"})
 
 
-if __name__ == "__main__":
-    log.info("Receiver starting on :5050")
-    app.run(host="0.0.0.0", port=5050)
-
 
 @app.route("/current")
 def current():
@@ -469,3 +474,7 @@ def current():
     except Exception as e:
         log.error(f"Current query error: {e}")
         return jsonify({"error": str(e)}), 500
+
+if __name__ == "__main__":
+    log.info("Receiver starting on :5050")
+    app.run(host="0.0.0.0", port=5050)
