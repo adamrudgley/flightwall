@@ -34,10 +34,18 @@ from datetime import datetime
 from PIL import Image, ImageDraw, ImageFont
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
+VERSION           = "3.16"
 THINKCENTRE_API   = "http://192.168.68.53:5050"
 POLL_INTERVAL     = 15       # seconds between API polls
 PAGE_DWELL_TIME   = 6        # seconds to show each page
 ACTIVE_BRIGHTNESS = 80
+
+# Which aircraft get shown
+HOME_LAT          = -27.4942
+HOME_LON          = 153.0772
+MAX_ALTITUDE_FT   = 10000    # ignore anything higher (cruising overflights)
+NEAREST_ONLY      = True     # True:  show only the aircraft closest to home
+                             # False: cycle through all of them, closest first
 
 MATRIX_WIDTH      = 64
 MATRIX_HEIGHT     = 32
@@ -313,7 +321,23 @@ def get_common_type(callsign):
     return None
 
 
+def distance_km(lat, lon):
+    """Great-circle distance from home, in km. Unknown position sorts last."""
+    if lat is None or lon is None:
+        return float("inf")
+    p1, p2 = math.radians(HOME_LAT), math.radians(lat)
+    dp, dl = p2 - p1, math.radians(lon - HOME_LON)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 6371.0 * 2 * math.asin(math.sqrt(a))
+
+
 def fetch_aircraft():
+    """
+    Returns (aircraft, too_high):
+      aircraft — list within MAX_ALTITUDE_FT, closest to home first,
+                 each with a "distance_km" field added
+      too_high — set of callsigns currently above MAX_ALTITUDE_FT
+    """
     try:
         r = requests.get(
             f"{THINKCENTRE_API}/current",
@@ -321,7 +345,18 @@ def fetch_aircraft():
             timeout=5,
         )
         r.raise_for_status()
-        aircraft = r.json().get("aircraft", [])
+        everything = r.json().get("aircraft", [])
+
+        aircraft, too_high = [], set()
+        for ac in everything:
+            alt = ac.get("alt_baro")
+            if alt is not None and alt > MAX_ALTITUDE_FT:
+                too_high.add(ac.get("callsign"))
+                continue
+            ac["distance_km"] = distance_km(ac.get("lat"), ac.get("lon"))
+            aircraft.append(ac)
+        aircraft.sort(key=lambda ac: ac["distance_km"])
+
         # Fill in missing models from historical data
         for ac in aircraft:
             if not ac.get("model") or ac["model"] == "Unknown":
@@ -329,10 +364,10 @@ def fetch_aircraft():
                 if common:
                     ac["model"] = common
                     log.info(f"  {ac['callsign']}: model filled from history → {common}")
-        return aircraft
+        return aircraft, too_high
     except Exception as e:
         log.error(f"Failed to fetch aircraft: {e}")
-        return []
+        return [], set()
 
 
 # ── AIRLINE LOGO HANDLING ─────────────────────────────────────────────────────
@@ -667,7 +702,8 @@ def main():
     matrix = RGBMatrix(options=options)
     canvas = matrix.CreateFrameCanvas()
 
-    log.info("FlightWall starting…")
+    log.info(f"FlightWall v{VERSION} starting — max altitude {MAX_ALTITUDE_FT} ft, "
+             f"{'nearest only' if NEAREST_ONLY else 'cycle all, nearest first'}")
 
     aircraft_list = []
     route_map     = {}
@@ -675,6 +711,7 @@ def main():
     ac_index      = 0
     page          = 1            # 1 or 2
     frame         = 0
+    page_start    = 0            # frame number when the current page began
     page_frames   = PAGE_DWELL_TIME * 10  # at ~10fps
     missed_polls  = {}           # callsign -> consecutive missed poll count
 
@@ -683,7 +720,8 @@ def main():
 
         if now - last_poll > POLL_INTERVAL:
             log.info("Polling for aircraft…")
-            fresh = fetch_aircraft()
+            fresh, too_high = fetch_aircraft()
+            shown_cs = aircraft_list[ac_index].get("callsign") if aircraft_list else None
             fresh_callsigns = {ac.get("callsign") for ac in fresh}
 
             # Increment missed counter for absent aircraft, reset for present ones
@@ -698,8 +736,15 @@ def main():
             dropped = {cs for cs, m in missed_polls.items() if m >= 2}
             if dropped:
                 log.info(f"Dropping landed/gone: {dropped}")
-                for cs in dropped:
-                    del missed_polls[cs]
+
+            # Drop straight away anything that has climbed above the limit
+            climbed = {ac.get("callsign") for ac in aircraft_list} & too_high
+            if climbed:
+                log.info(f"Dropping above {MAX_ALTITUDE_FT} ft: {climbed}")
+                dropped |= climbed
+
+            for cs in dropped:
+                missed_polls.pop(cs, None)
 
             # Merge: update existing with fresh data, drop landed, add new arrivals
             fresh_map = {ac["callsign"]: ac for ac in fresh if ac.get("callsign")}
@@ -711,15 +756,29 @@ def main():
                 new_list.append(fresh_map.pop(cs, ac))  # use fresh data if available
             new_list.extend(fresh_map.values())          # add new arrivals
 
-            if len(new_list) != len(aircraft_list):
-                ac_index = 0
-                page = 1
-
+            # Closest to home first
+            new_list.sort(key=lambda ac: ac.get("distance_km", float("inf")))
             aircraft_list = new_list
             last_poll = now
-            log.info(f"Active: {[ac.get('callsign') for ac in aircraft_list]}")
 
-            for ac in aircraft_list:
+            # Decide which aircraft to show
+            callsigns = [ac.get("callsign") for ac in aircraft_list]
+            if NEAREST_ONLY or shown_cs not in callsigns:
+                ac_index = 0
+            else:
+                ac_index = callsigns.index(shown_cs)   # keep showing the same one
+
+            if aircraft_list and callsigns[ac_index] != shown_cs:
+                page = 1
+                page_start = frame
+
+            log.info("Active: " + str([
+                f"{ac.get('callsign')} {ac.get('distance_km', float('inf')):.1f}km {ac.get('alt_baro')}ft"
+                for ac in aircraft_list
+            ]))
+
+            # Only look up routes for aircraft that will actually be displayed
+            for ac in (aircraft_list[:1] if NEAREST_ONLY else aircraft_list):
                 cs = ac.get("callsign")
                 if cs and cs not in route_map:
                     route = get_route(cs)
@@ -732,12 +791,14 @@ def main():
         if not aircraft_list:
             img = render_idle_frame(frame)
         else:
-            if frame > 0 and frame % page_frames == 0:
+            if frame - page_start >= page_frames:
+                page_start = frame
                 if page == 1:
                     page = 2
                 else:
                     page = 1
-                    ac_index = (ac_index + 1) % len(aircraft_list)
+                    if not NEAREST_ONLY:
+                        ac_index = (ac_index + 1) % len(aircraft_list)
 
             ac    = aircraft_list[ac_index]
             route = route_map.get(ac.get("callsign"))
@@ -752,7 +813,7 @@ def main():
 
 def run_preview_mode():
     log.info("Fetching aircraft for preview…")
-    aircraft_list = fetch_aircraft()
+    aircraft_list, _ = fetch_aircraft()
 
     if not aircraft_list:
         log.info("No aircraft overhead — rendering idle screen")
